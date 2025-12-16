@@ -353,13 +353,10 @@ if __name__ == "__main__":
 
     def heat_generation_function(x: np.ndarray, y: np.ndarray, a: float, b: float, c: float) -> np.ndarray:
         return a * x + b * y + c
-    
-    
     ## Problem Set up
     heq = HeatEquation2D(cpu_x,cpu_y,cpu_z, N,N,
                        k=k_si,rho=rho_si,cp=c_si,
                        init_condition=initial_condition)
-    """
     # Test values for a,b,c
     test_a = 1*10**6
     test_b = 1*10**6
@@ -372,51 +369,29 @@ if __name__ == "__main__":
     fig, ax = plt.subplots()
     contour1 = ax.contourf(heq.X,heq.Y,heq.u - 273)
     fig.colorbar(contour1,ax=ax)
-    #plt.show()
-"""
-
+    plt.show()
     ## Setting objective function
     heq.max_iter = 5E5
-    w1 = 0.2
+    w1 = 0.5
     w2 = 1 - w1
     global_tolerance = 1E-3
-    
-    x_vals = []
-    obj_vals = []
-    grad_vals = []
-    gradL_vals = []
-    power_vals = []
-    T_vals = []
-    eta_vals = []
 
 
     def objective_function(x):
-        # x = [v, a, b, c]
+        """Objective Function
 
+        Parameters
 
-        heq.set_fan_velocity(x[0])
-        heq.set_heat_generation(heat_generation_function, x[1], x[2], x[3])
+        ------
 
-        #Reset time and temperature field
-        heq.reset()
+        x[0] (float): Velocity of Fan
+        x[1] (float): a coefficient of heat generation
+        x[2] (float): b coefficient of heat generation
+        x[3] (float): c coefficient of heat generation
 
-        #Solve PDE
-        heq.solve_until_steady_state(tol=global_tolerance)
+        """
 
-        #Compute objective 
-        Tmax = np.max(heq.u)
-        fan_eff = heq.fan_efficiency
-
-        obj =  w1 * (Tmax / 273) - w2 * fan_eff
-
-        x_vals.append(x)
-        T_vals.append(Tmax)
-        eta_vals.append(fan_eff)
-        obj_vals.append(obj)
-        power_vals.append(heq.heat_generation_total)
-
-        return obj
-
+        return w1 * np.max(heq.u) / 273 - w2 * heq.fan_efficiency
 
     ## Bounds for inputs
     bounds = [
@@ -427,19 +402,17 @@ if __name__ == "__main__":
     ]
 
     def constraint_one(x):
-        heq.set_heat_generation(heat_generation_function, x[1], x[2], x[3])
+        """Constraint for total power generation by the CPU
+
+        Parameters
+
+        -------
+
+        x[1] (float): a coefficient of heat generation
+        x[2] (float): b coefficient of heat generation
+        x[3] (float): c coefficient of heat generation
+        """
         return 10 - heq.heat_generation_total
-    
-    def callback_func(xk, state):
-
-        if hasattr(state, 'lagrangian_grad'):
-            grad_L = state.lagrangian_grad
-            grad_L_norm = np.linalg.norm(grad_L)
-            gradL_vals.append(grad_L_norm)
-        else:
-            # Handle cases where the attribute might not exist (e.g., other methods or versions)
-            print(f"Warning: callback did not provide 'lagrangian_grad'")
-
 
     ## Setting the constraints
     constraints = [
@@ -454,11 +427,8 @@ if __name__ == "__main__":
     optimization_result = optimize.minimize(
         objective_function,
         x0,
-        method='trust-constr',
         bounds=bounds,
-        constraints=constraints, 
-        callback=callback_func,
-        options={'verbose': 3}
+        constraints=constraints
     )
     ## Build optimal solution
     heq.set_fan_velocity(optimization_result.x[0])
@@ -479,55 +449,3 @@ if __name__ == "__main__":
     contour3 = ax.contourf(heq.X, heq.Y, heq.u - 273)
     fig.colorbar(contour3, ax=ax)
     plt.show()
-
-
-    iterations = np.arange(len(obj_vals))
-    obj_list = [float(v) for v in obj_vals]
-
-    plt.figure(figsize=(12,8))
-    plt.plot(iterations, obj_list, label="Objective")
-    print(type(obj_vals[0]))
-    print(type(obj_list[0]))
-    print("obj:", obj_list)
-    plt.plot(iterations, T_vals, label="Max Temperature")
-    plt.plot(iterations, eta_vals, label="Fan Efficiency")
-    plt.plot(iterations, power_vals, label="Constraint Value")
-    plt.yscale('symlog')
-    plt.legend()
-    plt.xlabel("Iteration")
-    plt.ylabel("Value")
-    plt.title("Convergence History")
-    plt.grid(True)
-    plt.show()
-
-    x_array = np.array(x_vals)
-    x_array = x_array.astype(float)
-
-    plt.figure(figsize=(12,8))
-    plt.plot(iterations, x_array[:,0], label="v (fan)")
-    plt.plot(iterations, x_array[:,1], label="a")
-    print("a:", x_array[:,1] )
-    print("b:", x_array[:,2] )
-    plt.plot(iterations, x_array[:,2], label="b")
-    plt.plot(iterations, x_array[:,3], label="c")
-    plt.yscale('symlog')
-    plt.legend()
-    plt.title("Parameter Convergence")
-    plt.grid(True)
-    plt.show()
-
-
-    grad_iterations = np.arange(len(gradL_vals))
-    plt.figure(figsize=(12,8))
-    print("gradL_vals:", gradL_vals)
-    plt.plot(grad_iterations, gradL_vals)
-    plt.xlabel("Iteration")
-    plt.ylabel("||grad L||")
-    plt.yscale('log')
-    #plt.legend()
-    plt.title("Lagrangian Convergence")
-    plt.grid(True)
-    plt.show()
-
-
-
