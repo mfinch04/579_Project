@@ -625,6 +625,60 @@ if __name__ == "__main__":
     print("h=0.0001 dJ/da = ", dJ_da)
 
 
+
+    #======== AD w/ Jax ========
+    idx = 3   #Using design variable a
+    # h_vals = []
+    # J_vals = []
+
+    def derivative_surrogate(x_opt, idx):
+
+        h_vals = []
+        J_vals = []
+
+        for h in eps_vals:
+            x_plus = x_opt.copy()
+            x_minus = x_opt.copy()
+
+            x_plus[idx] += h
+            x_minus[idx] -= h
+
+            h_vals.append(+h)
+            J_vals.append(J_of_x(x_plus))
+
+            h_vals.append(-h)
+            J_vals.append(J_of_x(x_minus))
+
+        h_vals = np.array(h_vals)
+        J_vals = np.array(J_vals)
+
+        # Approximating the gradient using quadratic
+        # Design matrix
+        A = np.column_stack([
+            np.ones_like(h_vals),
+            h_vals,
+            h_vals**2
+        ])
+
+        # Least squares fit
+        beta, residuals, rank, svals = np.linalg.lstsq(A, J_vals, rcond=None)
+
+        beta0, beta1, beta2 = beta
+
+        return beta 
+
+    def surrogate_J(h, beta):
+        return beta[0] + beta[1]*h + beta[2]*h**2
+
+    dJdh_AD = jax.grad(surrogate_J)(0.0, jnp.array(derivative_surrogate(x_opt, idx)))
+    print("AD-based derivative:", dJdh_AD)
+
+
+
+
+    
+
+
     # plt.figure(figsize=(12,8))
     # plt.plot(iterations, obj_list, label="Objective")
     # print(type(obj_vals[0]))
