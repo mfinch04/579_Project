@@ -1,10 +1,10 @@
 # Imports
-import numpy as np # numpy for vectorization
+import numpy as onp # numpy for vectorization
 from collections.abc import Callable # For type hints
 import matplotlib.pyplot as plt
 from scipy import optimize
 import jax
-import jax.numpy as jnp
+import jax.numpy as np
 class HeatEquation2D:
     """Heat Equation Solver for MECH 579 Final Project
 
@@ -124,23 +124,25 @@ class HeatEquation2D:
 
         a, b, c (float): Variables associated with the heat generation function
         """
-        self.heat_generation_function = heat_generation_function
-        self.heat_gen_a = a
-        self.heat_gen_b = b
-        self.heat_gen_c = c
-        heat_generation_matrix = self.heat_generation_function(self.X,self.Y,self.heat_gen_a,self.heat_gen_b,self.heat_gen_c) * self.dx * self.dy *self.height
-        i0, iN, j0 ,jN = 0, self.n_x - 1, 0 , self.n_y - 1
-        # Boundaries with one side
-        heat_generation_matrix[i0,:] /= 2
-        heat_generation_matrix[iN,:] /= 2
-        heat_generation_matrix[j0,:] /= 2
-        heat_generation_matrix[jN,:] /= 2
-        # Boundaries with two sides
-        heat_generation_matrix[i0,j0] /= 2
-        heat_generation_matrix[iN,jN] /= 2
-        heat_generation_matrix[iN,j0] /= 2
-        heat_generation_matrix[i0,jN] /= 2
-        self.heat_generation_total = np.sum(np.sum(heat_generation_matrix))
+
+        q = heat_generation_function(self.X, self.Y, a, b, c)   # must use jnp ops inside
+        w = np.ones_like(q)
+        w = w.at[0, :].multiply(0.5); w = w.at[-1, :].multiply(0.5)
+        w = w.at[:, 0].multiply(0.5); w = w.at[:, -1].multiply(0.5)
+        
+        total = np.sum(q * w) * self.dx * self.dy * self.height
+    
+        # # edges (halve)
+        # heat_generation_matrix = heat_generation_matrix.at[i0, :].set(heat_generation_matrix[i0, :] / 2)
+        # heat_generation_matrix = heat_generation_matrix.at[iN, :].set(heat_generation_matrix[iN, :] / 2)
+        # heat_generation_matrix = heat_generation_matrix.at[:, j0].set(heat_generation_matrix[:, j0] / 2)
+        # heat_generation_matrix = heat_generation_matrix.at[:, jN].set(heat_generation_matrix[:, jN] / 2)
+
+        # # corners (halve again -> net quarter)
+        # heat_generation_matrix = heat_generation_matrix.at[i0, j0].set(heat_generation_matrix[i0, j0] / 2)
+        # heat_generation_matrix = heat_generation_matrix.at[i0, jN].set(heat_generation_matrix[i0, jN] / 2)
+        # heat_generation_matrix = heat_generation_matrix.at[iN, j0].set(heat_generation_matrix[iN, j0] / 2)
+        # heat_generation_matrix = heat_generation_matrix.at[iN, jN].set(heat_generation_matrix[iN, jN] / 2)
 
     def set_fan_velocity(self, v: float):
         """Sets the fan velocity
@@ -155,24 +157,39 @@ class HeatEquation2D:
         self.fan_efficiency = self.fan_efficiency_func(self.v)
 
 
-    def h_boundary(self,u: np.ndarray):
-        """Calculates the convective heat transfer coefficient at the boundaries
+    # def h_boundary(self,u: np.ndarray):
+    #     """Calculates the convective heat transfer coefficient at the boundaries
 
-        Parameters
+    #     Parameters
 
-        ------
+    #     ------
 
-        u (np.ndarray): Current Temperature Mesh
-        """
-        beta = 1/((u+self.ext_T)/2)
-        rayleigh = 9.81*beta*(u-self.ext_T)*self.dx**3/(self.ext_nu**2)*self.ext_Pr
-        nusselt = (0.825 + (0.387*rayleigh**(1/6))/
-                   (1+(0.492/self.ext_Pr)**(9/16))**(8/27))**2
-        return nusselt*self.ext_k/self.dx
+    #     u (np.ndarray): Current Temperature Mesh
+    #     """
+    #     beta = 1/((u+self.ext_T)/2)
+    #     rayleigh = 9.81*beta*(u-self.ext_T)*self.dx**3/(self.ext_nu**2)*self.ext_Pr
+    #     nusselt = (0.825 + (0.387*rayleigh**(1/6))/
+    #                (1+(0.492/self.ext_Pr)**(9/16))**(8/27))**2
+    #     return nusselt*self.ext_k/self.dx
+    
+    def h_boundary(self, u):
+        Tfilm = (u + self.ext_T) / 2.0
+        Tfilm = np.maximum(Tfilm, 1e-6)      # avoid divide-by-zero
 
-    def h_top(self,x: np.ndarray,u):
+        beta = 1.0 / Tfilm
+
+        dT = np.sqrt((u - self.ext_T)**2 + 1e-12)  # smooth appxroximation
+        rayleigh = 9.81 * beta * dT * (self.dx**3) / (self.ext_nu**2) * self.ext_Pr
+        rayleigh = np.maximum(rayleigh, 1e-12) # safety
+
+        nusselt = (0.825 + (0.387 * rayleigh**(1.0/6.0)) /
+                (1.0 + (0.492/self.ext_Pr)**(9.0/16.0))**(8.0/27.0))**2
+
+        return nusselt * self.ext_k / self.dx
+
+    def h_top(self, x: np.ndarray, v):
         """Calculates the convective heat transfer coefficient from the fan velocity
-
+        
         Parameters
 
         ------
@@ -181,21 +198,56 @@ class HeatEquation2D:
 
         u (np.ndarray): UNUSED
         """
-        Rex = self.v*x/self.ext_nu
-        r,c = Rex.shape
-        Nux = np.zeros((r,c))
-        for i in range(r):
-            for j in range(c):
-                if Rex[i,j] < 5E5:
-                    Nux[i,j] = 0.332*Rex[i,j]**0.5*self.ext_Pr**(1/3)
-                else:
-                    Nux[i,j] = 0.0296*Rex[i,j]**0.8*self.ext_Pr**(1/3)
-        h = Nux*self.ext_k/(x + 1E-5)
+
+        ## converted to jax friendly format
+
+        # Rex = v * x / self.ext_nu
+
+        # Pr_term = self.ext_Pr ** (1.0 / 3.0)
+
+        # # laminar and turbulent correlations (vectorized)
+        # Nu_lam = 0.332 * np.power(Rex, 0.5) * Pr_term
+        # Nu_tur = 0.0296 * np.power(Rex, 0.8) * Pr_term
+
+        # Nux = np.where(Rex < 5e5, Nu_lam, Nu_tur)
+
+        # h = Nux * self.ext_k / (x + 1e-5)
+        # return h
+        
+        # pick an epsilon based on grid spacing (better than a random 1e-12)
+        # if eps_x is None:
+        #     eps_x = 0.5 * self.dx  # or self.dx, or 1e-6
+
+        x_safe = np.maximum(x, 1e-6)             # ensures x_safe > 0 everywhere
+        Rex = v * x_safe / self.ext_nu
+
+        Pr_term = self.ext_Pr ** (1.0 / 3.0)
+
+        Nu_lam = 0.332 * np.sqrt(Rex) * Pr_term   # sqrt is clearer than power(.,0.5)
+        Nu_tur = 0.0296 * np.power(Rex, 0.8) * Pr_term
+
+        Nux = np.where(Rex < 5e5, Nu_lam, Nu_tur)
+
+        h = Nux * self.ext_k / (x_safe + 1e-5)    # use x_safe here too
         return h
+
+        # Rex = self.v*x/self.ext_nu
+        # r,c = Rex.shape
+        # Nux = np.zeros((r,c))
+        # for i in range(r):
+        #     for j in range(c):
+        #         if Rex[i,j] < 5E5:
+        #             Nux[i,j] = 0.332*Rex[i,j]**0.5*self.ext_Pr**(1/3)
+        #         else:
+        #             Nux[i,j] = 0.0296*Rex[i,j]**0.8*self.ext_Pr**(1/3)
+        # h = Nux*self.ext_k/(x + 1E-5)
+        # return h
+
+        # return h_top_jax(x, v, self.ext_nu, self.ext_Pr, self.ext_k)
 
     def calculate_h(self):
         """Calculates all necessary convective heat transfer coefficients"""
-        self.h_top_values = self.h_top(self.X,self.u)
+        self.h_top_values = self.h_top(self.X, self.v)
         self.h_boundary_values = self.h_boundary(self.u)
 
     def apply_boundary_conditions(self, old_u):
@@ -210,88 +262,252 @@ class HeatEquation2D:
         e_dot = self.heat_generation_function(self.X, self.Y, self.heat_gen_a, self.heat_gen_b, self.heat_gen_c)
         tau = self.thermal_alpha * self.dt / (self.dx*self.dy)
         i0,j0,iN,jN = 0, 0, self.n_x-1, self.n_y-1
+
+        new_u = old_u.copy()
         # Left
-        self.u[i0,1:-1] = (old_u[i0,1:-1] +
+        left_new = (old_u[i0,1:-1] +
                             2 * tau * self.h_boundary_values[i0,1:-1]/self.k * self.dy * (self.ext_T - old_u[i0,1:-1]) +
                             tau * self.dx * (old_u[i0,2:] - old_u[i0,1:-1]) / self.dy +
                             tau * self.dx * (old_u[i0,1:-1] - old_u[i0,2:]) / self.dy +
                             2 * tau * self.dy * (old_u[i0 + 1, 1:-1] - old_u[i0, 1:-1]) / self.dx +
                             tau * self.h_top_values[i0,1:-1]/self.k * self.dx * self.dy / self.height  * (self.ext_T - old_u[i0,1:-1]) +
                             tau * e_dot[i0,1:-1] / self.k * self.dx * self.dy)
+        new_u = new_u.at[i0,1:-1].set(left_new)
 
         # Right
-        self.u[iN, 1:-1] = (old_u[iN, 1:-1] +
+        right_new = (old_u[iN, 1:-1] +
                             2 * tau * self.h_boundary_values[iN, 1:-1] / self.k * self.dy * (self.ext_T - old_u[iN, 1:-1]) +
                             tau * self.dx * (old_u[iN, 2:] - old_u[iN, 1:-1]) / self.dy +
                             tau * self.dx * (old_u[iN, 1:-1] - old_u[iN, 2:]) / self.dy +
                             2 * tau * self.dy * (old_u[iN- 1, 1:-1] - old_u[iN,1:-1]) / self.dx +
                             tau * self.h_top_values[iN, 1:-1] / self.k * self.dx * self.dy / self.height * (self.ext_T - old_u[iN, 1:-1]) +
                             tau * e_dot[iN, 1:-1] / self.k * self.dx * self.dy)
+        new_u = new_u.at[iN, 1:-1].set(right_new)
 
         # Bottom
-        self.u[1:-1,j0] = (old_u[1:-1,j0] +
+        bottom_new = (old_u[1:-1,j0] +
                             2 * tau * self.h_boundary_values[1:-1,j0] / self.k * self.dx * (self.ext_T - old_u[1:-1,j0]) +
                             tau * self.dy * (old_u[2:,j0] - old_u[1:-1,j0]) / self.dx +
                             tau * self.dy * (old_u[1:-1,j0] - old_u[2:,j0]) / self.dx +
                             2 * tau * self.dx * (old_u[1:-1,j0 + 1] - old_u[1:-1,j0]) / self.dy +
                             tau * self.h_top_values[1:-1,j0] / self.k * self.dx * self.dy / self.height  * (self.ext_T - old_u[1:-1,j0]) +
                             tau * e_dot[1:-1,j0] / self.k * self.dx * self.dy)
+        new_u = new_u.at[1:-1,j0].set(bottom_new)
 
         # Top
-        self.u[1:-1,jN] = (old_u[1:-1,jN] +
+        top_new = (old_u[1:-1,jN] +
                             2 * tau * self.h_boundary_values[1:-1,jN] / self.k * self.dx * (self.ext_T - old_u[1:-1,jN]) +
                             tau * self.dy * (old_u[2:,jN] - old_u[1:-1,jN]) / self.dx +
                             tau * self.dy * (old_u[1:-1,jN] - old_u[2:,jN]) / self.dx +
                             2 * tau * self.dx * (old_u[1:-1,jN - 1] - old_u[1:-1,jN]) / self.dy +
                             tau * self.h_top_values[1:-1,jN] / self.k * self.dx * self.dy / self.height  * (self.ext_T - old_u[1:-1,jN]) +
                             tau * e_dot[1:-1, jN] / self.k * self.dx * self.dy)
+        new_u = new_u.at[1:-1,jN].set(top_new)
 
         ## Bottom Left Corner
-        self.u[i0,j0] = (old_u[i0,j0] +
+        botton_left_new = (old_u[i0,j0] +
                          2 * tau * self.h_boundary_values[i0,j0] * self.dy / self.k * (self.ext_T - old_u[i0,j0]) +
                          2 * tau * self.h_boundary_values[i0,j0] * self.dx / self.k * (self.ext_T - old_u[i0,j0]) +
                          2 * tau * self.dx * (old_u[i0,j0+1] - old_u[i0,j0]) / self.dy +
                          2 * tau * self.dy * (old_u[i0+1,j0] - old_u[i0,j0]) / self.dx +
                          tau * self.h_top_values[i0,j0] / self.k * self.dx * self.dy / self.height * (self.ext_T - old_u[i0,j0]) +
                          tau * e_dot[i0,j0] / self.k * self.dx * self.dy)
+        new_u = new_u.at[i0,j0].set(botton_left_new)
+
         ## Bottom Right Corner
-        self.u[iN,j0] = (old_u[iN,j0] +
+        bottom_right_new = (old_u[iN,j0] +
                          2 * tau * self.h_boundary_values[iN,j0] * self.dy / self.k * (self.ext_T - old_u[iN,j0]) +
                          2 * tau * self.h_boundary_values[iN,j0] * self.dx / self.k * (self.ext_T - old_u[iN,j0]) +
                          2 * tau * self.dx * (old_u[iN,j0+1] - old_u[iN,j0]) / self.dy +
                          2 * tau * self.dy * (old_u[iN-1,j0] - old_u[iN,j0]) / self.dx +
                          tau * self.h_top_values[iN,j0] / self.k * self.dx * self.dy / self.height * (self.ext_T - old_u[iN,j0]) +
                          tau * e_dot[iN,j0] / self.k * self.dx * self.dy)
+        new_u = new_u.at[iN,j0].set(bottom_right_new)
+
         ## Top Left Corner
-        self.u[i0,jN] = (old_u[i0,jN] +
+        top_left_new = (old_u[i0,jN] +
                          2 * tau * self.h_boundary_values[i0,jN] * self.dy / self.k * (self.ext_T - old_u[i0,jN]) +
                          2 * tau * self.h_boundary_values[i0,jN] * self.dx / self.k * (self.ext_T - old_u[i0,jN]) +
                          2 * tau * self.dx * (old_u[i0,jN-1] - old_u[i0,jN]) / self.dy +
                          2 * tau * self.dy * (old_u[i0+1,jN] - old_u[i0,jN]) / self.dx +
                          tau * self.h_top_values[i0,jN] / self.k * self.dx * self.dy / self.height  * (self.ext_T - old_u[i0,jN]) +
                          tau * e_dot[i0,jN] / self.k * self.dx * self.dy)
+        new_u = new_u.at[i0,jN].set(top_left_new)
+
         ## Top Right Corner
-        self.u[iN,jN] = (old_u[iN,jN] +
+        top_right_new = (old_u[iN,jN] +
                          2 * tau * self.h_boundary_values[iN,jN] * self.dy / self.k * (self.ext_T - old_u[iN,jN]) +
                          2 * tau * self.h_boundary_values[iN,jN] * self.dx / self.k * (self.ext_T - old_u[iN,jN]) +
                          2 * tau * self.dx * (old_u[iN,jN-1] - old_u[iN,jN]) / self.dy +
                          2 * tau * self.dy * (old_u[iN-1,jN] - old_u[iN,jN]) / self.dx +
                          tau * self.h_top_values[iN,jN] / self.k * self.dx * self.dy / self.height * (self.ext_T - old_u[iN,jN]) +
                          tau * e_dot[iN,jN] / self.k * self.dx * self.dy)
-        return
+        new_u = new_u.at[iN,jN].set(top_right_new)
 
+        return new_u
+    @staticmethod
+    def apply_boundary_conditions_pure(
+        old_u,          # (nx, ny)
+        e_dot,          # (nx, ny)
+        h_bnd,          # (nx, ny) = h_boundary(old_u)
+        h_top,          # (nx, ny) = h_top(X, v)
+        tau,            # scalar
+        k, dx, dy,      # scalars
+        height,         # scalar
+        ext_T           # scalar (ambient temp)
+    ):
+        nx, ny = old_u.shape
+        i0, iN = 0, nx - 1
+        j0, jN = 0, ny - 1
+
+        # Start from old_u so interior stays unchanged
+        u = old_u
+
+        # -------------------------
+        # Left boundary (i = 0), j = 1..ny-2
+        # -------------------------
+        left = (
+            old_u[i0, 1:-1]
+            + 2 * tau * h_bnd[i0, 1:-1] / k * dy * (ext_T - old_u[i0, 1:-1])
+            + tau * dx * (old_u[i0, 2:]   - old_u[i0, 1:-1]) / dy
+            + tau * dx * (old_u[i0, 0:-2] - old_u[i0, 1:-1]) / dy
+            + 2 * tau * dy * (old_u[i0 + 1, 1:-1] - old_u[i0, 1:-1]) / dx
+            + tau * h_top[i0, 1:-1] / k * dx * dy / height * (ext_T - old_u[i0, 1:-1])
+            + tau * e_dot[i0, 1:-1] / k * dx * dy
+        )
+        u = u.at[i0, 1:-1].set(left)
+
+        # -------------------------
+        # Right boundary (i = nx-1)
+        # -------------------------
+        right = (
+            old_u[iN, 1:-1]
+            + 2 * tau * h_bnd[iN, 1:-1] / k * dy * (ext_T - old_u[iN, 1:-1])
+            + tau * dx * (old_u[iN, 2:]   - old_u[iN, 1:-1]) / dy
+            + tau * dx * (old_u[iN, 0:-2] - old_u[iN, 1:-1]) / dy
+            + 2 * tau * dy * (old_u[iN - 1, 1:-1] - old_u[iN, 1:-1]) / dx
+            + tau * h_top[iN, 1:-1] / k * dx * dy / height * (ext_T - old_u[iN, 1:-1])
+            + tau * e_dot[iN, 1:-1] / k * dx * dy
+        )
+        u = u.at[iN, 1:-1].set(right)
+
+        # -------------------------
+        # Bottom boundary (j = 0), i = 1..nx-2
+        # -------------------------
+        bottom = (
+            old_u[1:-1, j0]
+            + 2 * tau * h_bnd[1:-1, j0] / k * dx * (ext_T - old_u[1:-1, j0])
+            + tau * dy * (old_u[2:,   j0] - old_u[1:-1, j0]) / dx
+            + tau * dy * (old_u[0:-2, j0] - old_u[1:-1, j0]) / dx
+            + 2 * tau * dx * (old_u[1:-1, j0 + 1] - old_u[1:-1, j0]) / dy
+            + tau * h_top[1:-1, j0] / k * dx * dy / height * (ext_T - old_u[1:-1, j0])
+            + tau * e_dot[1:-1, j0] / k * dx * dy
+        )
+        u = u.at[1:-1, j0].set(bottom)
+
+        # -------------------------
+        # Top boundary (j = ny-1)
+        # -------------------------
+        top = (
+            old_u[1:-1, jN]
+            + 2 * tau * h_bnd[1:-1, jN] / k * dx * (ext_T - old_u[1:-1, jN])
+            + tau * dy * (old_u[2:,   jN] - old_u[1:-1, jN]) / dx
+            + tau * dy * (old_u[0:-2, jN] - old_u[1:-1, jN]) / dx
+            + 2 * tau * dx * (old_u[1:-1, jN - 1] - old_u[1:-1, jN]) / dy
+            + tau * h_top[1:-1, jN] / k * dx * dy / height * (ext_T - old_u[1:-1, jN])
+            + tau * e_dot[1:-1, jN] / k * dx * dy
+        )
+        u = u.at[1:-1, jN].set(top)
+
+        # -------------------------
+        # Corners
+        # -------------------------
+        # Bottom-left (0,0)
+        bl = (
+            old_u[i0, j0]
+            + 2 * tau * h_bnd[i0, j0] * dy / k * (ext_T - old_u[i0, j0])
+            + 2 * tau * h_bnd[i0, j0] * dx / k * (ext_T - old_u[i0, j0])
+            + 2 * tau * dx * (old_u[i0, j0 + 1] - old_u[i0, j0]) / dy
+            + 2 * tau * dy * (old_u[i0 + 1, j0] - old_u[i0, j0]) / dx
+            + tau * h_top[i0, j0] / k * dx * dy / height * (ext_T - old_u[i0, j0])
+            + tau * e_dot[i0, j0] / k * dx * dy
+        )
+        u = u.at[i0, j0].set(bl)
+
+        # Bottom-right (nx-1,0)
+        br = (
+            old_u[iN, j0]
+            + 2 * tau * h_bnd[iN, j0] * dy / k * (ext_T - old_u[iN, j0])
+            + 2 * tau * h_bnd[iN, j0] * dx / k * (ext_T - old_u[iN, j0])
+            + 2 * tau * dx * (old_u[iN, j0 + 1] - old_u[iN, j0]) / dy
+            + 2 * tau * dy * (old_u[iN - 1, j0] - old_u[iN, j0]) / dx
+            + tau * h_top[iN, j0] / k * dx * dy / height * (ext_T - old_u[iN, j0])
+            + tau * e_dot[iN, j0] / k * dx * dy
+        )
+        u = u.at[iN, j0].set(br)
+
+        # Top-left (0,ny-1)
+        tl = (
+            old_u[i0, jN]
+            + 2 * tau * h_bnd[i0, jN] * dy / k * (ext_T - old_u[i0, jN])
+            + 2 * tau * h_bnd[i0, jN] * dx / k * (ext_T - old_u[i0, jN])
+            + 2 * tau * dx * (old_u[i0, jN - 1] - old_u[i0, jN]) / dy
+            + 2 * tau * dy * (old_u[i0 + 1, jN] - old_u[i0, jN]) / dx
+            + tau * h_top[i0, jN] / k * dx * dy / height * (ext_T - old_u[i0, jN])
+            + tau * e_dot[i0, jN] / k * dx * dy
+        )
+        u = u.at[i0, jN].set(tl)
+
+        # Top-right (nx-1,ny-1)
+        tr = (
+            old_u[iN, jN]
+            + 2 * tau * h_bnd[iN, jN] * dy / k * (ext_T - old_u[iN, jN])
+            + 2 * tau * h_bnd[iN, jN] * dx / k * (ext_T - old_u[iN, jN])
+            + 2 * tau * dx * (old_u[iN, jN - 1] - old_u[iN, jN]) / dy
+            + 2 * tau * dy * (old_u[iN - 1, jN] - old_u[iN, jN]) / dx
+            + tau * h_top[iN, jN] / k * dx * dy / height * (ext_T - old_u[iN, jN])
+            + tau * e_dot[iN, jN] / k * dx * dy
+        )
+        u = u.at[iN, jN].set(tr)
+
+        return u
+
+    @staticmethod
+    def interior_update_pure(old_u, h_top, X, Y, a, b, c,
+                         tau, k, dx, dy, height, ext_T, heat_fun):
+        lap = (
+            dy * (old_u[2:, 1:-1] - 2*old_u[1:-1, 1:-1] + old_u[0:-2, 1:-1]) / dx
+            + dx * (old_u[1:-1, 2:] - 2*old_u[1:-1, 1:-1] + old_u[1:-1, 0:-2]) / dy
+        )
+
+        src = heat_fun(X[1:-1, 1:-1], Y[1:-1, 1:-1], a, b, c)
+
+        interior = (
+            old_u[1:-1, 1:-1]
+            + tau * lap
+            + tau * (
+                h_top[1:-1, 1:-1] / k * dx * dy / height * (ext_T - old_u[1:-1, 1:-1])
+                + dx * dy / k * src
+            )
+        )
+
+        u_next = old_u.at[1:-1, 1:-1].set(interior)
+        return u_next
+    
     def step_forward_in_time(self):
         """Steps forward in time 1 timestep"""
-        self.calculate_h()
+        self.h_top_values = self.h_top(self.X, self.v)
+        self.h_boundary_values = self.h_boundary(self.u)
         old_u = self.u.copy()
-        self.apply_boundary_conditions(old_u)
+        self.u = self.apply_boundary_conditions(old_u)
         tau = self.thermal_alpha * self.dt / (self.dx * self.dy)
-        self.u[1:-1, 1:-1] = (old_u[1:-1, 1:-1] +
+        # internal node update
+        self.u = self.u.at[1:-1, 1:-1].set((old_u[1:-1, 1:-1] +
                                     tau * (
                                             self.dy * (old_u[2:, 1:-1] - 2 * old_u[1:-1, 1:-1] + old_u[0:-2, 1:-1]) / self.dx  +
                                             self.dx * (old_u[1:-1, 2:] - 2 * old_u[1:-1, 1:-1] + old_u[1:-1, 0:-2]) / self.dy
                                     ) + tau * (self.h_top_values[1:-1, 1:-1] / self.k * self.dx * self.dy / self.height * (self.ext_T - old_u[1:-1, 1:-1]) +
-                                    self.dx * self.dy / self.k * self.heat_generation_function(self.X[1:-1, 1:-1],self.Y[1:-1, 1:-1],self.heat_gen_a,self.heat_gen_b,self.heat_gen_c)))
+                                    self.dx * self.dy / self.k * self.heat_generation_function(self.X[1:-1, 1:-1],self.Y[1:-1, 1:-1],self.heat_gen_a,self.heat_gen_b,self.heat_gen_c))))
         self.steady_state_error = np.linalg.norm(self.u - old_u,np.inf)
         self.current_time += self.dt
 
@@ -539,7 +755,7 @@ if __name__ == "__main__":
     cpu_x = 0.04  # m
     cpu_y = 0.04  # m
     cpu_z = 0.04  # m
-    N = 25
+    N = 10
 
     # Temporal Parameters
     CFL = 0.5
@@ -565,7 +781,7 @@ if __name__ == "__main__":
     heq = HeatEquation2D(cpu_x,cpu_y,cpu_z, N,N,
                        k=k_si,rho=rho_si,cp=c_si,
                        init_condition=initial_condition)
-    
+        
 
     ## Setting objective function
     heq.max_iter = 5E5
@@ -585,52 +801,208 @@ if __name__ == "__main__":
     # eps_vals = [1e-1, 5e-2]
     FD_grad_J = []
 
+    # def total_heat(a, b, c):
+    #     q = heat_generation_function(heq.X, heq.Y, a, b, c)   # must use jnp ops inside
+    #     w = np.ones_like(q)
+    #     w = w.at[0, :].multiply(0.5); w = w.at[-1, :].multiply(0.5)
+    #     w = w.at[:, 0].multiply(0.5); w = w.at[:, -1].multiply(0.5)
+    #     return np.sum(q * w) * heq.dx * heq.dy * heq.height
 
-    def J_of_x(x):
-        heq.reset()
-        heq.set_fan_velocity(x[0])
-        heq.set_heat_generation(heat_generation_function, x[1], x[2], x[3])
-        heq.solve_until_steady_state()
-        return w1*np.max(heq.u)/273 - w2*heq.fan_efficiency
+    # g = jax.grad(total_heat, argnums=(0,1,2))(1.0, 2.0, 3.0)
+    # print(g)
 
-    ## outputs central difference partial derivative w.r.t. ith design variable
-    def FD_derivative(J, x, idx, h):
-        x_plus = x.copy()
-        x_minus = x.copy()
+    # print("Testing JIT")
+    # jit_total_heat = jax.jit(total_heat)
+    # print(jit_total_heat(1.0, 2.0, 3.0))
 
-        x_plus[idx] += h
-        x_minus[idx] -= h
+    # def fd_a(a, b, c, h=1e-6):
+    #     return (total_heat(a+h, b, c) - total_heat(a-h, b, c)) / (2*h)
 
-        central_diff_derivative = (J(x_plus) - J(x_minus)) / (2 * h)
-        return central_diff_derivative
+    # a,b,c = 1.0,2.0,3.0
+    # ga = float(jax.grad(total_heat, argnums=0)(a,b,c))
+    # fa = float(fd_a(a,b,c,1e-1))
+    # print("jax grad:", ga, ", FD grad:", fa,", diff:", abs(ga-fa))
 
-    ## Setting frame at optimal values 
-            # [v_opt,           a_opt,                   b_opt,              c_opt] from running optimziation in part (b)
-    x_opt = [20.00074766692191, -58.84393563772187, -58.89571954019555, 153324.33094301834]
-    print(f"v: {x_opt[0]} m/s, ", f"a: {x_opt[1]}, ", f"b: {x_opt[2]}, ", f"c: {x_opt[3]}", f"\n")
-    heq.verbose = False
+    # print("Testing h_top")
+    # X = np.ones((20, 20)) * 0.02  # example grid (must be >0)
+    # v0 = 1.0
 
-    J_opt = J_of_x(x_opt)
-    print("J at optimal point (start) = ", J_opt)
+    # def scalar_test(v):
+    #     return np.sum(heq.h_top(X, v))
 
-    # idx = 0 -> v
-    # idx = 1 -> a
-    # idx = 2 -> b
-    # idx = 3 -> c
+    # dv = jax.grad(scalar_test)(v0)
+    # print("dv=", dv)
 
-    for idx in [0, 1, 2, 3]:
-        cur_list = []
-        for h in eps_vals:
-            point_deriv = FD_derivative(J_of_x, x_opt, idx, h)
-            print("dJ/d_ = ", point_deriv)
-            cur_list.append(point_deriv)
-            print("ran for h=", h)
-        FD_grad_J.append(cur_list)
+    # print("Testing scalar_test jit \n")
+    # scalar_test_jit = jax.jit(scalar_test)
+    # print(scalar_test_jit(v0))
+    # print(jax.grad(scalar_test_jit)(v0))
+
+    # print("Comparing with FD \n")
+    # def fd(v, h=1e-3):
+    #     return (scalar_test(v+h) - scalar_test(v-h)) / (2*h)
+
+    # print("AD:", float(jax.grad(scalar_test)(v0)))
+    # for h in np.geomspace(1e-5, 1e-3, 10):
+    #     print(f"FD, h={h}:", float(fd(v0, h=h)))
+
+    # print("Testing boundary conditions \n")
     
-    print("dJ/dv: ", FD_grad_J[0], "\n")
-    print("dJ/da: ", FD_grad_J[1], "\n")
-    print("dJ/db: ", FD_grad_J[2], "\n")
-    print("dJ/dc: ", FD_grad_J[3], "\n")
+    # # ensure these are jax arrays already
+    # old_u = heq.u
+
+    # heq.calculate_h()
+    # u_bc = heq.apply_boundary_conditions(heq.u)
+    # print("any NaN in h_boundary?", bool(np.any(np.isnan(heq.h_boundary_values))))
+    # print("any NaN in u_bc?", bool(np.any(np.isnan(u_bc))))
+
+    # old_u = heq.u
+    # tau = heq.thermal_alpha * heq.dt / (heq.dx * heq.dy)
+
+    # def probe(v):
+    #     h_top = heq.h_top(heq.X, v)
+    #     u_next = heq.interior_update_pure(
+    #         old_u, h_top, heq.X, heq.Y, heq.heat_gen_a, heq.heat_gen_b, heq.heat_gen_c,
+    #         tau, heq.k, heq.dx, heq.dy, heq.height, heq.ext_T, heq.heat_generation_function
+    #     )
+    #     return np.sum(u_next)
+
+    # print("grad:", jax.grad(probe)(1.0))
+    # probe_jit = jax.jit(probe)
+    # print("jit val:", probe_jit(1.0))
+    # print("jit grad:", jax.grad(probe_jit)(1.0))
+
+    # v0 = 1.0
+    # h = 1e-2  # or 1e-1 if needed
+    # fd = (probe(v0+h) - probe(v0-h)) / (2*h)
+    # ad = jax.grad(probe)(v0)
+    # print("AD:", float(ad), "FD:", float(fd), "diff:", float(ad-fd))
+
+    print("Testing h_boundary \n")
+    # optional debug
+    jax.config.update("jax_debug_nans", True)
+    jax.config.update("jax_debug_infs", True)
+
+    old_u = heq.u
+    tau = heq.thermal_alpha * heq.dt / (heq.dx * heq.dy)
+
+    h_bnd = heq.h_boundary(old_u)
+    h_top = heq.h_top(heq.X, 1.0)  # fix v for this test
+
+    def probe(a):
+        e_dot = heq.heat_generation_function(heq.X, heq.Y, a, 0.0, 0.0)
+        u_bc = HeatEquation2D.apply_boundary_conditions_pure(
+            old_u, e_dot, h_bnd, h_top,
+            tau, heq.k, heq.dx, heq.dy, heq.height, heq.ext_T
+        )
+        return np.sum(u_bc)
+
+    print("grad:", jax.grad(probe)(1.0))
+    probe_jit = jax.jit(probe)
+    print("jit val:", probe_jit(1.0))
+    print("jit grad:", jax.grad(probe_jit)(1.0))
+
+    # def probe(v):
+
+    #     h_top = heq.h_top(heq.X, v)
+    #     h_bnd = heq.h_boundary(old_u)
+
+    #     # temporarily assign for your current method implementation
+    #     heq.h_top_values = h_top
+    #     heq.h_boundary_values = h_bnd
+
+    #     u_bc = heq.apply_boundary_conditions(old_u)
+    #     return np.sum(u_bc)
+
+    # print("grad:", jax.grad(probe)(1.0))
+
+    # print("JIT test \n")
+    # probe_jit = jax.jit(probe)
+    # print("jit value:", probe_jit(1.0))
+    # print("jit grad:", jax.grad(probe_jit)(1.0))
+
+    
+    # # Optional: catch the exact op that generates NaNs/infs during backward pass
+    # jax.config.update("jax_debug_nans", True)
+    # jax.config.update("jax_debug_infs", True)
+
+    # old_u = heq.u
+    # tau = heq.thermal_alpha * heq.dt / (heq.dx * heq.dy)
+
+    # # e_dot should be JAX-friendly (your heat_generation_function must use jnp ops)
+    # e_dot = heq.heat_generation_function(heq.X, heq.Y, heq.heat_gen_a, heq.heat_gen_b, heq.heat_gen_c)
+
+    # # h_bnd depends on old_u only (if you’re testing v-derivative)
+    # h_bnd = heq.h_boundary(old_u)
+
+    # def probe(v):
+    #     h_top = heq.h_top(heq.X, v)
+    #     u_bc = heq.apply_boundary_conditions_pure(
+    #         old_u, e_dot, h_bnd, h_top,
+    #         tau, heq.k, heq.dx, heq.dy, heq.height, heq.ext_T
+    #     )
+    #     return np.sum(u_bc)   # scalar
+
+    # # Eager grad
+    # print("grad:", jax.grad(probe)(1.0))
+
+    # # JIT + grad
+    # probe_jit = jax.jit(probe)
+    # print("jit value:", probe_jit(1.0))
+    # print("jit grad:", jax.grad(probe_jit)(1.0))
+
+    # v0 = 1.0
+    # h = 1e-3
+    # fd = (probe(v0+h) - probe(v0-h)) / (2*h)
+    # ad = jax.grad(probe)(v0)
+    # print("AD:", float(ad), "FD:", float(fd), "diff:", float(ad - fd))
+
+
+    # def J_of_x(x):
+    #     heq.reset()
+    #     heq.set_fan_velocity(x[0])
+    #     heq.set_heat_generation(heat_generation_function, x[1], x[2], x[3])
+    #     heq.solve_until_steady_state()
+    #     return w1*np.max(heq.u)/273 - w2*heq.fan_efficiency
+
+    # ## outputs central difference partial derivative w.r.t. ith design variable
+    # def FD_derivative(J, x, idx, h):
+    #     x_plus = x.copy()
+    #     x_minus = x.copy()
+
+    #     x_plus[idx] += h
+    #     x_minus[idx] -= h
+
+    #     central_diff_derivative = (J(x_plus) - J(x_minus)) / (2 * h)
+    #     return central_diff_derivative
+
+    # ## Setting frame at optimal values 
+    #         # [v_opt,           a_opt,                   b_opt,              c_opt] from running optimziation in part (b)
+    # x_opt = [20.00074766692191, -58.84393563772187, -58.89571954019555, 153324.33094301834]
+    # print(f"v: {x_opt[0]} m/s, ", f"a: {x_opt[1]}, ", f"b: {x_opt[2]}, ", f"c: {x_opt[3]}", f"\n")
+    # heq.verbose = False
+
+    # J_opt = J_of_x(x_opt)
+    # print("J at optimal point (start) = ", J_opt)
+
+    # # idx = 0 -> v
+    # # idx = 1 -> a
+    # # idx = 2 -> b
+    # # idx = 3 -> c
+
+    # for idx in [0, 1, 2, 3]:
+    #     cur_list = []
+    #     for h in eps_vals:
+    #         point_deriv = FD_derivative(J_of_x, x_opt, idx, h)
+    #         print("dJ/d_ = ", point_deriv)
+    #         cur_list.append(point_deriv)
+    #         print("ran for h=", h)
+    #     FD_grad_J.append(cur_list)
+    
+    # print("dJ/dv: ", FD_grad_J[0], "\n")
+    # print("dJ/da: ", FD_grad_J[1], "\n")
+    # print("dJ/db: ", FD_grad_J[2], "\n")
+    # print("dJ/dc: ", FD_grad_J[3], "\n")
 
 
     # #======== AD w/ Jax ========
@@ -680,23 +1052,22 @@ if __name__ == "__main__":
     # dJdh_AD = jax.grad(surrogate_J)(0.0, jnp.array(derivative_surrogate(x_opt, idx)))
     # print("AD-based derivative:", dJdh_AD)
 
-    fig, ax = plt.subplots(nrows=2, ncols=2, layout='constrained', figsize=(8,8))
-    ax[0,0].plot(eps_vals, FD_grad_J[0], color='blue', label="dJ/dv")
-    ax[1,0].plot(eps_vals, FD_grad_J[1], color='red', label="dJ/da")
-    ax[0,1].plot(eps_vals, FD_grad_J[2], color='orange', label="dJ/db")
-    ax[1,1].plot(eps_vals, FD_grad_J[3], color='purple', label="dJ/dc")
-
-    for idx in [0, 1]:
-        for jdx in [0, 1]:
-            ax[idx, jdx].set_xscale('log')
-            ax[idx, jdx].grid(True)
-            ax[idx, jdx].legend()
-
-    fig.supylabel("Partial derivatives, $\partial J/ \partial r$")
-    fig.supxlabel("Step size, $h$")
-
-    fig.suptitle("Stability of Central Finite-Difference Approximations")
-    plt.show()
+    # plt.figure(figsize=(12,8))
+    # fig, ax = plt.subplots(4,1)
+    # ax[0].plot(eps_vals, FD_grad_J[0], label="dJ/dv")
+    # ax[1].plot(eps_vals, FD_grad_J[1], label="dJ/da")
+    # ax[2].plot(eps_vals, FD_grad_J[2], label="dJ/db")
+    # ax[3].plot(eps_vals, FD_grad_J[3], label="dJ/dc")
+    # ax[0].set_xscale('log')
+    # ax[1].set_xscale('log')
+    # ax[2].set_xscale('log')
+    # ax[3].set_xscale('log')
+    # ax[3].set_xlabel("step size, h")
+    # fig.supylabel("Partial derivatives, $\partial J/ \partial r$")
+    # plt.title("Stability of Central Finite-Difference Approximations")
+    # plt.grid(True)
+    # plt.legend()
+    # plt.show()
 
     # x_array = np.array(x_vals)
     # x_array = x_array.astype(float)
