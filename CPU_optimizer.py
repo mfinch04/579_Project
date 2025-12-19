@@ -607,122 +607,128 @@ if __name__ == "__main__":
     ## Setting frame at optimal values 
             # [v_opt,           a_opt,                   b_opt,              c_opt] from running optimziation in part (b)
     x_opt = [20.00074766692191, -58.84393563772187, -58.89571954019555, 153324.33094301834]
+    x0 = [19.00074766692191, -58.84393563772187, -58.89571954019555, 153324.33094301834]
     print(f"v: {x_opt[0]} m/s, ", f"a: {x_opt[1]}, ", f"b: {x_opt[2]}, ", f"c: {x_opt[3]}", f"\n")
     heq.verbose = False
 
     J_opt = J_of_x(x_opt)
     print("J at optimal point (start) = ", J_opt)
+    J0 = J_of_x(x0)
+    print("J at start = ", J_opt)
 
     # idx = 0 -> v
     # idx = 1 -> a
     # idx = 2 -> b
     # idx = 3 -> c
 
-    for idx in [0, 1, 2, 3]:
-        cur_list = []
-        for h in eps_vals:
-            point_deriv = FD_derivative(J_of_x, x_opt, idx, h)
-            print("dJ/d_ = ", point_deriv)
-            cur_list.append(point_deriv)
-            print("ran for h=", h)
-        FD_grad_J.append(cur_list)
-    
-    print("dJ/dv: ", FD_grad_J[0], "\n")
-    print("dJ/da: ", FD_grad_J[1], "\n")
-    print("dJ/db: ", FD_grad_J[2], "\n")
-    print("dJ/dc: ", FD_grad_J[3], "\n")
-
-
-    # #======== AD w/ Jax ========
-    # idx = 3   #Using design variable a
-    # # h_vals = []
-    # # J_vals = []
-
-    # def derivative_surrogate(x_opt, idx):
-
-    #     h_vals = []
-    #     J_vals = []
-
+    # for idx in [0, 1, 2, 3]:
+    #     cur_list = []
     #     for h in eps_vals:
-    #         x_plus = x_opt.copy()
-    #         x_minus = x_opt.copy()
+    #         point_deriv = FD_derivative(J_of_x, x_opt, idx, h)
+    #         print("dJ/d_ = ", point_deriv)
+    #         cur_list.append(point_deriv)
+    #         print("ran for h=", h)
+    #     FD_grad_J.append(cur_list)
+    
+    stable_dJ_dv = FD_derivative(J_of_x, x_opt, 0, 1e-6)
+    print("dJ/dv(h=1e-5): ", stable_dJ_dv, "\n")
+    stable_dJ_da = FD_derivative(J_of_x, x_opt, 1, 1e-0)
+    print("dJ/da(h=1e-1): ", stable_dJ_da, "\n")
+    stable_dJ_db = FD_derivative(J_of_x, x_opt, 2, 1e-0)
+    print("dJ/db(h=1e-1): ", stable_dJ_db, "\n")
+    stable_dJ_dc = FD_derivative(J_of_x, x_opt, 3, 1e-0)
+    print("dJ/dc(h=1e-1): ", stable_dJ_dc, "\n")
 
-    #         x_plus[idx] += h
-    #         x_minus[idx] -= h
+    #======== AD w/ Jax ========
+    idx = 3   #Using design variable a
+    # h_vals = []
+    # J_vals = []
 
-    #         h_vals.append(+h)
-    #         J_vals.append(J_of_x(x_plus))
+    def derivative_surrogate(x_opt, idx):
 
-    #         h_vals.append(-h)
-    #         J_vals.append(J_of_x(x_minus))
+        h_vals = []
+        J_vals = []
 
-    #     h_vals = np.array(h_vals)
-    #     J_vals = np.array(J_vals)
+        for h in eps_vals:
+            x_plus = x_opt.copy()
+            x_minus = x_opt.copy()
 
-    #     # Approximating the gradient using quadratic
-    #     # Design matrix
-    #     A = np.column_stack([
-    #         np.ones_like(h_vals),
-    #         h_vals,
-    #         h_vals**2
-    #     ])
+            x_plus[idx] += h
+            x_minus[idx] -= h
 
-    #     # Least squares fit
-    #     beta, residuals, rank, svals = np.linalg.lstsq(A, J_vals, rcond=None)
+            h_vals.append(+h)
+            J_vals.append(J_of_x(x_plus))
 
-    #     beta0, beta1, beta2 = beta
+            h_vals.append(-h)
+            J_vals.append(J_of_x(x_minus))
 
-    #     return beta 
+        h_vals = np.array(h_vals)
+        J_vals = np.array(J_vals)
 
-    # def surrogate_J(h, beta):
-    #     return beta[0] + beta[1]*h + beta[2]*h**2
+        # Approximating the gradient using quadratic
+        # Design matrix
+        A = np.column_stack([
+            np.ones_like(h_vals),
+            h_vals,
+            h_vals**2
+        ])
 
-    # dJdh_AD = jax.grad(surrogate_J)(0.0, jnp.array(derivative_surrogate(x_opt, idx)))
-    # print("AD-based derivative:", dJdh_AD)
+        # Least squares fit
+        beta, residuals, rank, svals = np.linalg.lstsq(A, J_vals, rcond=None)
 
-    fig, ax = plt.subplots(nrows=2, ncols=2, layout='constrained', figsize=(8,8))
-    ax[0,0].plot(eps_vals, FD_grad_J[0], color='blue', label="dJ/dv")
-    ax[1,0].plot(eps_vals, FD_grad_J[1], color='red', label="dJ/da")
-    ax[0,1].plot(eps_vals, FD_grad_J[2], color='orange', label="dJ/db")
-    ax[1,1].plot(eps_vals, FD_grad_J[3], color='purple', label="dJ/dc")
+        beta0, beta1, beta2 = beta
 
-    for idx in [0, 1]:
-        for jdx in [0, 1]:
-            ax[idx, jdx].set_xscale('log')
-            ax[idx, jdx].grid(True)
-            ax[idx, jdx].legend()
+        return beta 
 
-    fig.supylabel("Partial derivatives, $\partial J/ \partial r$")
-    fig.supxlabel("Step size, $h$")
+    def surrogate_J(h, beta):
+        return beta[0] + beta[1]*h + beta[2]*h**2
 
-    fig.suptitle("Stability of Central Finite-Difference Approximations")
-    plt.show()
+    dJdh_AD = jax.grad(surrogate_J)(0.0, jnp.array(derivative_surrogate(x_opt, idx)))
+    print("AD-based derivative:", dJdh_AD)
 
-    # x_array = np.array(x_vals)
-    # x_array = x_array.astype(float)
+    # fig, ax = plt.subplots(nrows=2, ncols=2, layout='constrained', figsize=(8,8))
+    # ax[0,0].plot(eps_vals, FD_grad_J[0], color='blue', label="dJ/dv")
+    # ax[1,0].plot(eps_vals, FD_grad_J[1], color='red', label="dJ/da")
+    # ax[0,1].plot(eps_vals, FD_grad_J[2], color='orange', label="dJ/db")
+    # ax[1,1].plot(eps_vals, FD_grad_J[3], color='purple', label="dJ/dc")
 
-    # plt.figure(figsize=(12,8))
-    # plt.plot(iterations, x_array[:,0], label="v (fan)")
-    # plt.plot(iterations, x_array[:,1], label="a")
-    # print("a:", x_array[:,1] )
-    # print("b:", x_array[:,2] )
-    # plt.plot(iterations, x_array[:,2], label="b")
-    # plt.plot(iterations, x_array[:,3], label="c")
-    # plt.yscale('symlog')
-    # plt.legend()
-    # plt.title("Parameter Convergence")
-    # plt.grid(True)
+    # for idx in [0, 1]:
+    #     for jdx in [0, 1]:
+    #         ax[idx, jdx].set_xscale('log')
+    #         ax[idx, jdx].grid(True)
+    #         ax[idx, jdx].legend()
+
+    # fig.supylabel("Partial derivatives, $\partial J/ \partial r$")
+    # fig.supxlabel("Step size, $h$")
+
+    # fig.suptitle("Stability of Central Finite-Difference Approximations")
     # plt.show()
 
+    # # x_array = np.array(x_vals)
+    # # x_array = x_array.astype(float)
 
-    # grad_iterations = np.arange(len(gradL_vals))
-    # plt.figure(figsize=(12,8))
-    # print("gradL_vals:", gradL_vals)
-    # plt.plot(grad_iterations, gradL_vals)
-    # plt.xlabel("Iteration")
-    # plt.ylabel("||grad L||")
-    # plt.yscale('log')
-    # #plt.legend()
-    # plt.title("Lagrangian Convergence")
-    # plt.grid(True)
-    # plt.show()
+    # # plt.figure(figsize=(12,8))
+    # # plt.plot(iterations, x_array[:,0], label="v (fan)")
+    # # plt.plot(iterations, x_array[:,1], label="a")
+    # # print("a:", x_array[:,1] )
+    # # print("b:", x_array[:,2] )
+    # # plt.plot(iterations, x_array[:,2], label="b")
+    # # plt.plot(iterations, x_array[:,3], label="c")
+    # # plt.yscale('symlog')
+    # # plt.legend()
+    # # plt.title("Parameter Convergence")
+    # # plt.grid(True)
+    # # plt.show()
+
+
+    # # grad_iterations = np.arange(len(gradL_vals))
+    # # plt.figure(figsize=(12,8))
+    # # print("gradL_vals:", gradL_vals)
+    # # plt.plot(grad_iterations, gradL_vals)
+    # # plt.xlabel("Iteration")
+    # # plt.ylabel("||grad L||")
+    # # plt.yscale('log')
+    # # #plt.legend()
+    # # plt.title("Lagrangian Convergence")
+    # # plt.grid(True)
+    # # plt.show()

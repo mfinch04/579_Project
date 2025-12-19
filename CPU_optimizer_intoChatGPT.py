@@ -141,18 +141,6 @@ class HeatEquation2D:
         
         total = np.sum(q * w) * self.dx * self.dy * self.height
     
-        # # edges (halve)
-        # heat_generation_matrix = heat_generation_matrix.at[i0, :].set(heat_generation_matrix[i0, :] / 2)
-        # heat_generation_matrix = heat_generation_matrix.at[iN, :].set(heat_generation_matrix[iN, :] / 2)
-        # heat_generation_matrix = heat_generation_matrix.at[:, j0].set(heat_generation_matrix[:, j0] / 2)
-        # heat_generation_matrix = heat_generation_matrix.at[:, jN].set(heat_generation_matrix[:, jN] / 2)
-
-        # # corners (halve again -> net quarter)
-        # heat_generation_matrix = heat_generation_matrix.at[i0, j0].set(heat_generation_matrix[i0, j0] / 2)
-        # heat_generation_matrix = heat_generation_matrix.at[i0, jN].set(heat_generation_matrix[i0, jN] / 2)
-        # heat_generation_matrix = heat_generation_matrix.at[iN, j0].set(heat_generation_matrix[iN, j0] / 2)
-        # heat_generation_matrix = heat_generation_matrix.at[iN, jN].set(heat_generation_matrix[iN, jN] / 2)
-
     def set_fan_velocity(self, v: float):
         """Sets the fan velocity
 
@@ -164,22 +152,6 @@ class HeatEquation2D:
         """
         self.v = v
         self.fan_efficiency = self.fan_efficiency_func(self.v)
-
-
-    # def h_boundary(self,u: np.ndarray):
-    #     """Calculates the convective heat transfer coefficient at the boundaries
-
-    #     Parameters
-
-    #     ------
-
-    #     u (np.ndarray): Current Temperature Mesh
-    #     """
-    #     beta = 1/((u+self.ext_T)/2)
-    #     rayleigh = 9.81*beta*(u-self.ext_T)*self.dx**3/(self.ext_nu**2)*self.ext_Pr
-    #     nusselt = (0.825 + (0.387*rayleigh**(1/6))/
-    #                (1+(0.492/self.ext_Pr)**(9/16))**(8/27))**2
-    #     return nusselt*self.ext_k/self.dx
     
     def h_boundary(self, u):
         Tfilm = (u + self.ext_T) / 2.0
@@ -207,26 +179,6 @@ class HeatEquation2D:
 
         u (np.ndarray): UNUSED
         """
-
-        ## converted to jax friendly format
-
-        # Rex = v * x / self.ext_nu
-
-        # Pr_term = self.ext_Pr ** (1.0 / 3.0)
-
-        # # laminar and turbulent correlations (vectorized)
-        # Nu_lam = 0.332 * np.power(Rex, 0.5) * Pr_term
-        # Nu_tur = 0.0296 * np.power(Rex, 0.8) * Pr_term
-
-        # Nux = np.where(Rex < 5e5, Nu_lam, Nu_tur)
-
-        # h = Nux * self.ext_k / (x + 1e-5)
-        # return h
-        
-        # pick an epsilon based on grid spacing (better than a random 1e-12)
-        # if eps_x is None:
-        #     eps_x = 0.5 * self.dx  # or self.dx, or 1e-6
-
         x_safe = np.maximum(x, 1e-6)             # ensures x_safe > 0 everywhere
         Rex = v * x_safe / self.ext_nu
 
@@ -239,20 +191,6 @@ class HeatEquation2D:
 
         h = Nux * self.ext_k / (x_safe + 1e-5)    # use x_safe here too
         return h
-
-        # Rex = self.v*x/self.ext_nu
-        # r,c = Rex.shape
-        # Nux = np.zeros((r,c))
-        # for i in range(r):
-        #     for j in range(c):
-        #         if Rex[i,j] < 5E5:
-        #             Nux[i,j] = 0.332*Rex[i,j]**0.5*self.ext_Pr**(1/3)
-        #         else:
-        #             Nux[i,j] = 0.0296*Rex[i,j]**0.8*self.ext_Pr**(1/3)
-        # h = Nux*self.ext_k/(x + 1E-5)
-        # return h
-
-        # return h_top_jax(x, v, self.ext_nu, self.ext_Pr, self.ext_k)
 
     def calculate_h(self):
         """Calculates all necessary convective heat transfer coefficients"""
@@ -354,6 +292,7 @@ class HeatEquation2D:
         new_u = new_u.at[iN,jN].set(top_right_new)
 
         return new_u
+    
     @staticmethod
     def apply_boundary_conditions_pure(
         old_u,          # (nx, ny)
@@ -547,42 +486,6 @@ class HeatEquation2D:
 
         return jax.lax.fori_loop(0, n_steps, body, u0)
 
-    def step_forward_in_time(self):
-        """Steps forward in time 1 timestep"""
-        self.h_top_values = self.h_top(self.X, self.v)
-        self.h_boundary_values = self.h_boundary(self.u)
-        old_u = self.u.copy()
-        self.u = self.apply_boundary_conditions(old_u)
-        tau = self.thermal_alpha * self.dt / (self.dx * self.dy)
-        # internal node update
-        self.u = self.u.at[1:-1, 1:-1].set((old_u[1:-1, 1:-1] +
-                                    tau * (
-                                            self.dy * (old_u[2:, 1:-1] - 2 * old_u[1:-1, 1:-1] + old_u[0:-2, 1:-1]) / self.dx  +
-                                            self.dx * (old_u[1:-1, 2:] - 2 * old_u[1:-1, 1:-1] + old_u[1:-1, 0:-2]) / self.dy
-                                    ) + tau * (self.h_top_values[1:-1, 1:-1] / self.k * self.dx * self.dy / self.height * (self.ext_T - old_u[1:-1, 1:-1]) +
-                                    self.dx * self.dy / self.k * self.heat_generation_function(self.X[1:-1, 1:-1],self.Y[1:-1, 1:-1],self.heat_gen_a,self.heat_gen_b,self.heat_gen_c))))
-        self.steady_state_error = np.linalg.norm(self.u - old_u,np.inf)
-        self.steady_state_error_list.append(self.steady_state_error)
-        self.current_time += self.dt
-
-    def solve_until_steady_state(self, tol: float = 1e-3):
-        """Solves until steady state is reached
-
-        Parameters
-
-        ------
-
-        tol (float, optional): Tolerance until steady state
-        """
-        iter = 0
-        self.step_forward_in_time()
-
-        while self.steady_state_error > tol and iter < self.max_iter:
-            self.step_forward_in_time()
-            iter += 1
-            if (iter % 1000) == 0 and self.verbose:
-                print(f"Iteration: {iter}, Error: {self.steady_state_error}")
-
 def make_params(heq: HeatEquation2D):
     return {
         "X": heq.X,
@@ -600,23 +503,6 @@ def make_params(heq: HeatEquation2D):
         "h_top_fun": lambda X, v: heq.h_top(X, v),
         "h_bnd_fun": lambda u: heq.h_boundary(u),
     }
-
-    # def solve_until_time(self,final_time: float):
-    #     """Solves until time is reached
-
-    #     Parameters
-
-    #     ------
-
-    #     final_time (float): Final time of simulation
-    #     """
-    #     iter = 0
-    #     while self.current_time < final_time:
-    #         self.step_forward_in_time()
-    #         iter += 1
-    #         if (iter % 1000) == 0 and self.verbose:
-    #             print(f"Iteration: {iter}, Time: {self.current_time}")
-
 
 if __name__ == "__main__":
     # Physical Dimensions
@@ -649,21 +535,7 @@ if __name__ == "__main__":
     heq = HeatEquation2D(cpu_x,cpu_y,cpu_z, N,N,
                        k=k_si,rho=rho_si,cp=c_si,
                        init_condition=initial_condition)
-    """
-    # Test values for a,b,c
-    test_a = 1*10**6
-    test_b = 1*10**6
-    test_c = (1.5625*10**5 - 0.02*test_b - 0.02*test_a)
-    ## Fan velocity for test
-    fan_velocity = 10.0
-    heq.set_heat_generation(heat_generation_function,test_a,test_b,test_c)
-    heq.set_fan_velocity(fan_velocity)
-    ## plotting initial conditions
-    fig, ax = plt.subplots()
-    contour1 = ax.contourf(heq.X,heq.Y,heq.u - 273)
-    fig.colorbar(contour1,ax=ax)
-    #plt.show()
-"""
+    
 
     ## Setting objective function
     heq.max_iter = 5E5
@@ -922,143 +794,3 @@ if __name__ == "__main__":
     print("val:", obj_jit(x_opt))
     print("grad:", grad_obj(x_opt))
     print("jax.grad:", jax.grad(obj)(x_opt))
-
-    # def J_of_x(x):
-    #     heq.reset()
-    #     heq.set_fan_velocity(x[0])
-    #     heq.set_heat_generation(heat_generation_function, x[1], x[2], x[3])
-    #     heq.solve_until_steady_state()
-    #     return w1*np.max(heq.u)/273 - w2*heq.fan_efficiency
-
-    # ## outputs central difference partial derivative w.r.t. ith design variable
-    # def FD_derivative(J, x, idx, h):
-    #     x_plus = x.copy()
-    #     x_minus = x.copy()
-
-    #     x_plus[idx] += h
-    #     x_minus[idx] -= h
-
-    #     central_diff_derivative = (J(x_plus) - J(x_minus)) / (2 * h)
-    #     return central_diff_derivative
-
-    # ## Setting frame at optimal values 
-    #         # [v_opt,           a_opt,                   b_opt,              c_opt] from running optimziation in part (b)
-    # x_opt = [20.00074766692191, -58.84393563772187, -58.89571954019555, 153324.33094301834]
-    # print(f"v: {x_opt[0]} m/s, ", f"a: {x_opt[1]}, ", f"b: {x_opt[2]}, ", f"c: {x_opt[3]}", f"\n")
-    # heq.verbose = False
-
-    # J_opt = J_of_x(x_opt)
-    # print("J at optimal point (start) = ", J_opt)
-
-    # # idx = 0 -> v
-    # # idx = 1 -> a
-    # # idx = 2 -> b
-    # # idx = 3 -> c
-
-    # for idx in [0, 1, 2, 3]:
-    #     cur_list = []
-    #     for h in eps_vals:
-    #         point_deriv = FD_derivative(J_of_x, x_opt, idx, h)
-    #         print("dJ/d_ = ", point_deriv)
-    #         cur_list.append(point_deriv)
-    #         print("ran for h=", h)
-    #     FD_grad_J.append(cur_list)
-    
-    # print("dJ/dv: ", FD_grad_J[0], "\n")
-    # print("dJ/da: ", FD_grad_J[1], "\n")
-    # print("dJ/db: ", FD_grad_J[2], "\n")
-    # print("dJ/dc: ", FD_grad_J[3], "\n")
-
-
-    # #======== AD w/ Jax ========
-    # idx = 3   #Using design variable a
-    # # h_vals = []
-    # # J_vals = []
-
-    # def derivative_surrogate(x_opt, idx):
-
-    #     h_vals = []
-    #     J_vals = []
-
-    #     for h in eps_vals:
-    #         x_plus = x_opt.copy()
-    #         x_minus = x_opt.copy()
-
-    #         x_plus[idx] += h
-    #         x_minus[idx] -= h
-
-    #         h_vals.append(+h)
-    #         J_vals.append(J_of_x(x_plus))
-
-    #         h_vals.append(-h)
-    #         J_vals.append(J_of_x(x_minus))
-
-    #     h_vals = np.array(h_vals)
-    #     J_vals = np.array(J_vals)
-
-    #     # Approximating the gradient using quadratic
-    #     # Design matrix
-    #     A = np.column_stack([
-    #         np.ones_like(h_vals),
-    #         h_vals,
-    #         h_vals**2
-    #     ])
-
-    #     # Least squares fit
-    #     beta, residuals, rank, svals = np.linalg.lstsq(A, J_vals, rcond=None)
-
-    #     beta0, beta1, beta2 = beta
-
-    #     return beta 
-
-    # def surrogate_J(h, beta):
-    #     return beta[0] + beta[1]*h + beta[2]*h**2
-
-    # dJdh_AD = jax.grad(surrogate_J)(0.0, jnp.array(derivative_surrogate(x_opt, idx)))
-    # print("AD-based derivative:", dJdh_AD)
-
-    # plt.figure(figsize=(12,8))
-    # fig, ax = plt.subplots(4,1)
-    # ax[0].plot(eps_vals, FD_grad_J[0], label="dJ/dv")
-    # ax[1].plot(eps_vals, FD_grad_J[1], label="dJ/da")
-    # ax[2].plot(eps_vals, FD_grad_J[2], label="dJ/db")
-    # ax[3].plot(eps_vals, FD_grad_J[3], label="dJ/dc")
-    # ax[0].set_xscale('log')
-    # ax[1].set_xscale('log')
-    # ax[2].set_xscale('log')
-    # ax[3].set_xscale('log')
-    # ax[3].set_xlabel("step size, h")
-    # fig.supylabel("Partial derivatives, $\partial J/ \partial r$")
-    # plt.title("Stability of Central Finite-Difference Approximations")
-    # plt.grid(True)
-    # plt.legend()
-    # plt.show()
-
-    # x_array = np.array(x_vals)
-    # x_array = x_array.astype(float)
-
-    # plt.figure(figsize=(12,8))
-    # plt.plot(iterations, x_array[:,0], label="v (fan)")
-    # plt.plot(iterations, x_array[:,1], label="a")
-    # print("a:", x_array[:,1] )
-    # print("b:", x_array[:,2] )
-    # plt.plot(iterations, x_array[:,2], label="b")
-    # plt.plot(iterations, x_array[:,3], label="c")
-    # plt.yscale('symlog')
-    # plt.legend()
-    # plt.title("Parameter Convergence")
-    # plt.grid(True)
-    # plt.show()
-
-
-    # grad_iterations = np.arange(len(gradL_vals))
-    # plt.figure(figsize=(12,8))
-    # print("gradL_vals:", gradL_vals)
-    # plt.plot(grad_iterations, gradL_vals)
-    # plt.xlabel("Iteration")
-    # plt.ylabel("||grad L||")
-    # plt.yscale('log')
-    # #plt.legend()
-    # plt.title("Lagrangian Convergence")
-    # plt.grid(True)
-    # plt.show()
